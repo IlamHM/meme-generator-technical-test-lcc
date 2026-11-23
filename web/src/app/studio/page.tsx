@@ -2,13 +2,14 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, unwrap } from "@/lib/api";
-import { describeError } from "@/lib/errors";
+import { describeError, isUnauthorized } from "@/lib/errors";
 import { useMe } from "@/lib/auth";
 import { QueryErrorNotice } from "@/components/query-error-notice";
 import {
@@ -117,6 +118,7 @@ interface ResultUploadData {
 }
 
 export default function StudioPage() {
+  const router = useRouter();
   const me = useMe();
   const status = useSubscriptionStatus();
   const memes = useMemes();
@@ -130,6 +132,14 @@ export default function StudioPage() {
   const [error, setError] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+
+  // Guard auth: 401 (belum login / sesi habis) → alihkan ke /login.
+  // Error non-401 (backend down dll.) tetap ditampilkan via notice.
+  useEffect(() => {
+    if (isUnauthorized(me.error) || isUnauthorized(status.error)) {
+      router.replace("/login");
+    }
+  }, [me.error, status.error, router]);
 
   // Render ulang preview setiap teks berubah — jangan pakai rAF dari handler
   // onChange, karena closure-nya masih memegang state LAMA (inilah bug teks
@@ -207,6 +217,14 @@ export default function StudioPage() {
   // Backend tidak bisa dihubungi → tampilkan pesan rapi + retry, jangan
   // salah artikan sebagai "belum login" / "belum berlangganan".
   if (me.isError || status.isError) {
+    if (isUnauthorized(me.error) || isUnauthorized(status.error)) {
+      // Fallback selagi useEffect redirect ke /login.
+      return (
+        <main className="mx-auto max-w-3xl p-8">
+          <p className="text-muted-foreground">Mengalihkan…</p>
+        </main>
+      );
+    }
     const q = me.isError ? me : status;
     return (
       <main className="mx-auto max-w-3xl space-y-4 p-8">
@@ -225,24 +243,12 @@ export default function StudioPage() {
     );
   }
   if (!me.data) {
+    // Kasus 401 sudah ditangani di atas (redirect). Keadaan ini berarti
+    // data belum tersedia — tampilkan loading alih-alih kartu "harus
+    // masuk" agar tidak salah arti.
     return (
-      <main className="mx-auto max-w-3xl space-y-4 p-8">
-        <h1 className="text-4xl font-bold" style={{ fontFamily: "var(--font-impact)" }}>
-          MEME STUDIO
-        </h1>
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 p-8 text-center">
-            <p>Anda harus masuk untuk mengakses studio.</p>
-            <div className="flex gap-2">
-              <Button asChild>
-                <Link href="/login">Masuk</Link>
-              </Button>
-              <Button asChild variant="outline">
-                <Link href="/register">Daftar</Link>
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+      <main className="mx-auto max-w-3xl p-8">
+        <p className="text-muted-foreground">Memuat…</p>
       </main>
     );
   }

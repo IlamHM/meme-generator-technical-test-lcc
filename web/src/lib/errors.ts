@@ -1,3 +1,10 @@
+// Cek apakah error adalah HTTP 401 (belum login / sesi habis).
+export function isUnauthorized(err: unknown): boolean {
+  return (
+    (err as { response?: { status?: number } })?.response?.status === 401
+  );
+}
+
 // Ubah error apa pun (axios / network / Error biasa) menjadi pesan yang
 // jelas untuk ditampilkan di UI, termasuk kode status HTTP.
 export function describeError(err: unknown): string {

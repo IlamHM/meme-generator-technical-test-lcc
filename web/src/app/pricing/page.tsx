@@ -5,7 +5,7 @@
 
 import { useRouter } from "next/navigation";
 import { useCheckout, usePlans, useSubscriptionStatus } from "@/lib/queries";
-import { describeError } from "@/lib/errors";
+import { describeError, isUnauthorized } from "@/lib/errors";
 import { Button } from "@/components/ui/button";
 import { QueryErrorNotice } from "@/components/query-error-notice";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +23,20 @@ export default function PricingPage() {
   const status = useSubscriptionStatus();
   const checkout = useCheckout();
   const router = useRouter();
+
+  // Halaman ini publik. 401 dari status berarti guest → dianggap "belum
+  // berlangganan", tanpa menampilkan error notice.
+  const guest = isUnauthorized(status.error);
+
+  const onSubscribe = (code: string) => {
+    if (guest) {
+      router.push("/login");
+      return;
+    }
+    checkout.mutate(code, {
+      onSuccess: (res) => router.push(`/checkout/${res.payment.reference}`),
+    });
+  };
 
   return (
     <main className="mx-auto max-w-4xl space-y-8 p-8">
@@ -51,7 +65,7 @@ export default function PricingPage() {
           onRetry={() => plans.refetch()}
         />
       )}
-      {status.isError && (
+      {status.isError && !guest && (
         <QueryErrorNotice
           error={status.error}
           onRetry={() => status.refetch()}
@@ -77,12 +91,7 @@ export default function PricingPage() {
               <Button
                 className="w-full"
                 disabled={checkout.isPending}
-                onClick={() =>
-                  checkout.mutate(plan.code, {
-                    onSuccess: (res) =>
-                      router.push(`/checkout/${res.payment.reference}`),
-                  })
-                }
+                onClick={() => onSubscribe(plan.code)}
               >
                 {checkout.isPending ? "Memproses…" : "Berlangganan"}
               </Button>

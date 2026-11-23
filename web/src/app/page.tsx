@@ -1,13 +1,14 @@
 "use client";
 
-// Halaman depan dengan guard auth. BUG: jika !me.data dialihkan ke /login,
-// sementara /login mengembalikan ke sini bila cookie masih ada —
-// kombinasi keduanya bisa menghasilkan redirect loop tak berujung.
+// Halaman depan protected: belum login (401) → redirect ke /login.
+// /login mengarahkan balik ke sini hanya bila auth/me sukses (cookie
+// valid), jadi tidak ada redirect loop.
 import { useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { useMe } from "@/lib/auth";
+import { isUnauthorized } from "@/lib/errors";
 import { QueryErrorNotice } from "@/components/query-error-notice";
 
 export default function Home() {
@@ -15,14 +16,23 @@ export default function Home() {
   const me = useMe();
 
   useEffect(() => {
-    // Jangan redirect saat query error (mis. backend down) — itu bukan
-    // berarti belum login, dan redirect bisa memicu loop.
-    if (!me.isLoading && !me.isError && !me.data) {
+    // Halaman ini protected: 401 (belum login) → alihkan ke /login.
+    // Jangan redirect saat query error non-401 (mis. backend down) — itu
+    // bukan berarti belum login, dan redirect bisa memicu loop.
+    if (isUnauthorized(me.error)) {
       router.replace("/login");
     }
-  }, [me.isLoading, me.isError, me.data, router]);
+  }, [me.error, router]);
 
   if (me.isError) {
+    if (isUnauthorized(me.error)) {
+      // Fallback selagi useEffect redirect ke /login.
+      return (
+        <main className="flex min-h-screen flex-col items-center justify-center gap-8 p-8">
+          <p className="text-muted-foreground">Mengalihkan…</p>
+        </main>
+      );
+    }
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-8 p-8">
         <div className="w-full max-w-md">
