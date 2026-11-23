@@ -31,9 +31,9 @@ export function useSubscriptionStatus() {
     queryKey: queryKeys.subscription,
     queryFn: async () =>
       unwrap<SubscriptionStatus>(await api.get("/api/v1/subscription/status")),
-    // BUG: status dianggap abadi — setelah beli/expired, UI tidak pernah
-    // mengambil ulang sampai invalidate manual / reload penuh.
-    staleTime: Number.POSITIVE_INFINITY,
+    // TKT-104: status langganan tidak abadi. staleTime 0 agar invalidate
+    // setelah pembayaran langsung refetch tanpa hard refresh.
+    staleTime: 0,
   });
 }
 
@@ -66,7 +66,12 @@ export function useCheckout() {
       // Checkout selesai — lepaskan key agar pembelian plan ini berikutnya
       // dianggap maksud baru.
       checkoutIdempotencyKeys.delete(planCode);
-      qc.invalidateQueries({ queryKey: queryKeys.subscription });
+      // TKT-104: invalidate + paksa refetch query subscription yang aktif
+      // agar status paket di UI ter-update tanpa hard refresh.
+      qc.invalidateQueries({
+        queryKey: queryKeys.subscription,
+        refetchType: "active",
+      });
     },
   });
 }
@@ -80,7 +85,13 @@ export function useConfirmPayment() {
           `/api/v1/subscription/payments/${reference}/confirm`,
         ),
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.subscription }),
+    onSuccess: () =>
+      // TKT-104: setelah confirm payment, status subscription harus
+      // langsung di-refetch (bukan hanya ditandai basi).
+      qc.invalidateQueries({
+        queryKey: queryKeys.subscription,
+        refetchType: "active",
+      }),
   });
 }
 
