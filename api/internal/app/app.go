@@ -39,6 +39,7 @@ func New(ctx context.Context, cfg config.Config) (*App, error) {
 	v1.Mount(router, deps.db, deps.redis, deps.s3, tokens, cfg)
 
 	var handler http.Handler = router
+	handler = middleware.NoCache(handler)
 	handler = middleware.CORS(cfg.AllowedOrigins)(handler)
 	handler = middleware.RequestLogger(slog.Default())(handler)
 
