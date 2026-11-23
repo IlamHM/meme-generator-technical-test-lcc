@@ -3,6 +3,23 @@
 Aplikasi meme generator berbasis langganan: user berlangganan dulu, upload gambar,
 lalu bisa tambah teks dan voila meme jadi!.
 
+## Perbaikan Production Issue
+
+9 tiket production issue + 1 prasyarat CORS sudah diperbaiki dan terverifikasi. Detail lengkap (root cause, perubahan, proof) ada di [FIX_REPORT.md](FIX_REPORT.md), analisis awal di [docs/ANALYSIS.md](docs/ANALYSIS.md).
+
+| Tiket | Masalah singkat | Status |
+|---|---|---|
+| — | CORS memblokir header `Idempotency-Key` saat checkout | ✅ |
+| TKT-101 | Paket kedaluwarsa tetap bisa upload/render | ✅ |
+| TKT-102 | Data user bocor lewat cache proxy | ✅ |
+| TKT-103 | Logout gagal + redirect loop login | ✅ |
+| TKT-104 | Status/kuota UI tidak update tanpa hard refresh | ✅ |
+| TKT-105 | Double-click membuat 2 checkout pending | ✅ |
+| TKT-106 | Tombol "Bayar Sekarang" tanpa feedback | ✅ |
+| TKT-107 | IDOR: user bisa lihat/hapus meme orang lain | ✅ |
+| TKT-108 | Upload file berbahaya/oversize ke S3 | ✅ |
+| TKT-109 | Kuota meme bisa ditembus via request paralel | ✅ |
+
 ## Stack
 
 - **Backend** (`api/`): Go, chi-free stdlib `net/http`, pgx/v5, sqlc, golang-migrate, JWT (golang-jwt), Redis (go-redis), S3 (aws-sdk-go-v2 → Garage)
@@ -66,6 +83,10 @@ cp .env.example .env
 make setup   # cek & pasang dependency (docker, go, bun, migrate, sqlc, air)
 make dev     # infra + migrate + api (:8080) + web (:3000) via process-compose
 ```
+
+> **Catatan env**: secara default postgres berjalan di **port 5432** (sesuai `.env.example`).
+> Bila port 5432 bentrok dengan instance lain, override `POSTGRES_PORT` di `.env`
+> dan samakan `DATABASE_URL` agar `make migrate-up` & API terhubung ke instance yang benar.
 
 Perintah lain: `make migrate-new name=x`, `make migrate-up`, `make sqlc-generate`,
 `make build`, `make lint`, `make test`, `make check`.
