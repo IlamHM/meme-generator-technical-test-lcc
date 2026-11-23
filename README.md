@@ -1,5 +1,7 @@
 # Meme Portal
 
+[Tampilan Meme Portal](docs/screenshots/landing-page.png)
+
 Aplikasi meme generator berbasis langganan: user berlangganan dulu, upload gambar,
 lalu bisa tambah teks dan voila meme jadi!.
 
