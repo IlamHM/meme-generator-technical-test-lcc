@@ -57,8 +57,17 @@ export function useLogout() {
   return useMutation({
     mutationFn: async () => api.post("/api/v1/auth/logout"),
     onSuccess: () => {
+      // Bersihkan seluruh cache client (termasuk ["me"]) supaya tidak ada
+      // state auth basi, lalu ke halaman login — bukan "/" (home adalah
+      // protected page yang akan melempar balik ke /login).
       qc.clear();
-      window.location.href = "/";
+      window.location.href = "/login";
+    },
+    onError: () => {
+      // Walau API logout gagal, tetap buang state client agar tidak
+      // tersangkut di halaman protected.
+      qc.clear();
+      window.location.href = "/login";
     },
   });
 }

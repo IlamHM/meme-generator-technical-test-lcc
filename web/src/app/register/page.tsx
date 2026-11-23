@@ -9,19 +9,21 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useRegister } from "@/lib/auth";
+import { useRegister, useMe } from "@/lib/auth";
 import { apiErrorMessage } from "@/lib/api";
 
 export default function RegisterPage() {
   const router = useRouter();
   const register = useRegister();
+  const me = useMe();
 
-  // BUG: sama seperti /login — cookie ada → lempar ke halaman utama.
+  // Sama seperti /login: guard berdasarkan query /auth/me, bukan cookie
+  // mentah — cookie bisa basi setelah logout dan memicu redirect loop.
   useEffect(() => {
-    if (document.cookie.includes("meme_access_token")) {
+    if (!me.isLoading && me.data) {
       router.replace("/");
     }
-  }, [router]);
+  }, [me.isLoading, me.data, router]);
 
   const form = useForm({
     defaultValues: { name: "", email: "", password: "" },
