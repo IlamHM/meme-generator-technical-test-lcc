@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { useCheckout, usePlans, useSubscriptionStatus } from "@/lib/queries";
 import { describeError } from "@/lib/errors";
 import { Button } from "@/components/ui/button";
+import { QueryErrorNotice } from "@/components/query-error-notice";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 function formatIdr(n: number) {
@@ -43,6 +44,18 @@ export default function PricingPage() {
             </p>
           )}
         </div>
+      )}
+      {plans.isError && (
+        <QueryErrorNotice
+          error={plans.error}
+          onRetry={() => plans.refetch()}
+        />
+      )}
+      {status.isError && (
+        <QueryErrorNotice
+          error={status.error}
+          onRetry={() => status.refetch()}
+        />
       )}
       {checkout.isError && (
         <p className="text-sm text-destructive">

@@ -8,16 +8,29 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { useMe } from "@/lib/auth";
+import { QueryErrorNotice } from "@/components/query-error-notice";
 
 export default function Home() {
   const router = useRouter();
   const me = useMe();
 
   useEffect(() => {
-    if (!me.isLoading && !me.data) {
+    // Jangan redirect saat query error (mis. backend down) — itu bukan
+    // berarti belum login, dan redirect bisa memicu loop.
+    if (!me.isLoading && !me.isError && !me.data) {
       router.replace("/login");
     }
-  }, [me.isLoading, me.data, router]);
+  }, [me.isLoading, me.isError, me.data, router]);
+
+  if (me.isError) {
+    return (
+      <main className="flex min-h-screen flex-col items-center justify-center gap-8 p-8">
+        <div className="w-full max-w-md">
+          <QueryErrorNotice error={me.error} onRetry={() => me.refetch()} />
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-8 p-8">

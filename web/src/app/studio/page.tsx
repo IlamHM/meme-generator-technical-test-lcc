@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { api, unwrap } from "@/lib/api";
 import { describeError } from "@/lib/errors";
 import { useMe } from "@/lib/auth";
+import { QueryErrorNotice } from "@/components/query-error-notice";
 import {
   useCompleteMeme,
   useMemes,
@@ -203,6 +204,19 @@ export default function StudioPage() {
 
   // Gate: halaman studio hanya untuk user yang sudah berlangganan.
   // Belum selesai dicek → tampilkan kosong dulu agar tidak berkedip.
+  // Backend tidak bisa dihubungi → tampilkan pesan rapi + retry, jangan
+  // salah artikan sebagai "belum login" / "belum berlangganan".
+  if (me.isError || status.isError) {
+    const q = me.isError ? me : status;
+    return (
+      <main className="mx-auto max-w-3xl space-y-4 p-8">
+        <h1 className="text-4xl font-bold" style={{ fontFamily: "var(--font-impact)" }}>
+          MEME STUDIO
+        </h1>
+        <QueryErrorNotice error={q.error} onRetry={() => q.refetch()} />
+      </main>
+    );
+  }
   if (me.isLoading || status.isLoading) {
     return (
       <main className="mx-auto max-w-3xl p-8">
@@ -334,6 +348,12 @@ export default function StudioPage() {
 
       <section className="space-y-2">
         <h2 className="text-lg font-semibold">Meme Saya</h2>
+        {memes.isError && (
+          <QueryErrorNotice
+            error={memes.error}
+            onRetry={() => memes.refetch()}
+          />
+        )}
         {memes.data?.items?.length ? (
           <ul className="grid gap-3 sm:grid-cols-2">
             {memes.data.items.map((m) => (
