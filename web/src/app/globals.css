@@ -80,3 +80,69 @@
     @apply bg-background text-foreground;
   }
 }
+
+// Design system memakai teks Anton uppercase dengan letter-spacing positif.
+.font-impact {
+  font-family: var(--font-impact);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Slider ukuran font — monokrom, snap ke preset (index-based). */
+.font-size-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  width: 100%;
+  cursor: pointer;
+  border-radius: 9999px;
+  background: #e2e8f0;
+  outline: none;
+}
+.font-size-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  width: 18px;
+  border-radius: 9999px;
+  background: #0f172a;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+  transition: transform 150ms ease-out;
+}
+.font-size-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
+}
+.font-size-slider::-moz-range-thumb {
+  height: 18px;
+  width: 18px;
+  border-radius: 9999px;
+  background: #0f172a;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+}
+.font-size-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: #e2e8f0;
+}
+
+/* Scrollbar global — monokrom, slim, rounded. */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: #94a3b8 #f8fafc;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #f8fafc;
+}
+::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #0f172a;
+}

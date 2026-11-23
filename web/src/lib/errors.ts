@@ -36,3 +36,8 @@ export function describeError(err: unknown): string {
 
   return e?.message || "Terjadi kesalahan";
 }
+
+// Deteksi error axios dengan HTTP status 401 (unauthorized / belum login).
+export function isUnauthorized(err: unknown): boolean {
+  return (err as { response?: { status?: number } })?.response?.status === 401;
+}
