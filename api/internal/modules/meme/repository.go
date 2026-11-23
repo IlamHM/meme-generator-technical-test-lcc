@@ -6,8 +6,27 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// errNoRows mengubah "tidak ada baris" (id tidak ada, id milik user lain, atau
+// format id tidak valid) menjadi ErrNotFound. Id milik user lain sengaja
+// dipetakan ke not found supaya id meme user lain tidak bisa dienumerasi.
+func errNoRows(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	// 22P02 = invalid_text_representation: id bukan format uuid yang valid.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "22P02" {
+		return ErrNotFound
+	}
+	return err
+}
 
 type Repository struct {
 	pool *pgxpool.Pool
@@ -33,31 +52,37 @@ func (r *Repository) Create(ctx context.Context, m Meme) (Meme, error) {
 	return out, nil
 }
 
+// GetByID mengambil meme berdasarkan id DAN pemiliknya. userID wajib berasal
+// dari context JWT (bukan dari request), sehingga meme milik user lain
+// menghasilkan ErrNotFound.
 func (r *Repository) GetByID(ctx context.Context, id, userID string) (Meme, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT id, user_id, title, base_url, result_url, top_text, bottom_text, font_size, created_at, updated_at
-		 FROM memes WHERE id = $1`, id)
+		`SELECT id, user_id, title, base_url, result_url, top_text, bottom_text, font_size, created_at
+		 FROM memes WHERE id = $1 AND user_id = $2`, id, userID)
 	var m Meme
 	err := row.Scan(&m.ID, &m.UserID, &m.Title, &m.BaseImageURL, &m.ResultURL, &m.TopText, &m.BottomText, &m.FontSize, &m.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Meme{}, ErrNotFound
+	if err != nil {
+		if errors.Is(errNoRows(err), ErrNotFound) {
+			return Meme{}, ErrNotFound
+		}
+		return Meme{}, fmt.Errorf("meme repository: get by id gagal: %w", err)
 	}
-	return m, err
+	return m, nil
 }
 
 func (r *Repository) SetResultURL(ctx context.Context, id, userID, resultURL string) (Meme, error) {
 	const q = `
 		UPDATE memes SET result_url = $2
-		WHERE id = $1
+		WHERE id = $1 AND user_id = $3
 		RETURNING id, user_id, title, base_url, result_url, top_text, bottom_text, font_size, created_at`
 	var out Meme
-	err := r.pool.QueryRow(ctx, q, id, resultURL).Scan(
+	err := r.pool.QueryRow(ctx, q, id, resultURL, userID).Scan(
 		&out.ID, &out.UserID, &out.Title, &out.BaseImageURL, &out.ResultURL,
 		&out.TopText, &out.BottomText, &out.FontSize, &out.CreatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Meme{}, ErrNotFound
-	}
 	if err != nil {
+		if errors.Is(errNoRows(err), ErrNotFound) {
+			return Meme{}, ErrNotFound
+		}
 		return Meme{}, fmt.Errorf("meme repository: set result gagal: %w", err)
 	}
 	return out, nil
@@ -91,8 +116,12 @@ func (r *Repository) ListByUser(ctx context.Context, userID string, limit, offse
 }
 
 func (r *Repository) Delete(ctx context.Context, id, userID string) error {
-	tag, err := r.pool.Exec(ctx, `DELETE FROM memes WHERE id = $1`, id)
+	tag, err := r.pool.Exec(ctx, `DELETE FROM memes WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
+		// 22P02 = id bukan uuid valid → perlakukan seperti not found.
+		if errors.Is(errNoRows(err), ErrNotFound) {
+			return ErrNotFound
+		}
 		return fmt.Errorf("meme repository: delete gagal: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
