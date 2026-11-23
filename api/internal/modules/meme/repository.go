@@ -36,18 +36,70 @@ func NewPostgresRepository(pool *pgxpool.Pool) *Repository {
 	return &Repository{pool: pool}
 }
 
+// Create menyimpan meme baru dengan enforcement kuota atomik (fix TKT-109).
+//
+// Sebelumnya check kuota (gate CanCreate) dan insert terpisah tanpa
+// transaksi/lock, sehingga N request paralel lolos check bersama-sama dan
+// usage menembus limit. Sekarang lock baris subscription aktif milik user
+// (SELECT ... FOR UPDATE, granularitas per-user — bukan lock global), hitung
+// usage, lalu insert dalam SATU transaksi. Request konkuren terserialisasi
+// pada lock baris, sehingga tepat sisa kuota yang sukses.
 func (r *Repository) Create(ctx context.Context, m Meme) (Meme, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return Meme{}, fmt.Errorf("meme repository: begin tx gagal: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Lock baris subscription aktif user sampai commit.
+	var maxMemes, durationDays int32
+	err = tx.QueryRow(ctx, `
+		SELECT p.max_memes, p.duration_days
+		FROM subscriptions s
+		JOIN plans p ON p.id = s.plan_id
+		WHERE s.user_id = $1 AND s.status = 'active'
+		ORDER BY s.ends_at DESC
+		LIMIT 1
+		FOR UPDATE OF s`,
+		m.UserID,
+	).Scan(&maxMemes, &durationDays)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Meme{}, ErrNotSubscribedGate
+	}
+	if err != nil {
+		return Meme{}, fmt.Errorf("meme repository: lock subscription gagal: %w", err)
+	}
+
+	// max_memes = 0 berarti unlimited; selain itu cek usage di window plan.
+	if maxMemes > 0 {
+		var used int32
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM memes
+			 WHERE user_id = $1 AND created_at >= now() - make_interval(days => $2)`,
+			m.UserID, durationDays,
+		).Scan(&used); err != nil {
+			return Meme{}, fmt.Errorf("meme repository: hitung usage gagal: %w", err)
+		}
+		if used >= maxMemes {
+			return Meme{}, ErrQuotaExceeded
+		}
+	}
+
 	const q = `
 		INSERT INTO memes (user_id, title, base_url, top_text, bottom_text, font_size)
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, user_id, title, base_url, result_url, top_text, bottom_text, font_size, created_at`
 	var out Meme
-	err := r.pool.QueryRow(ctx, q,
+	err = tx.QueryRow(ctx, q,
 		m.UserID, m.Title, m.BaseImageURL, m.TopText, m.BottomText, m.FontSize,
 	).Scan(&out.ID, &out.UserID, &out.Title, &out.BaseImageURL, &out.ResultURL,
 		&out.TopText, &out.BottomText, &out.FontSize, &out.CreatedAt)
 	if err != nil {
 		return Meme{}, fmt.Errorf("meme repository: create gagal: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Meme{}, fmt.Errorf("meme repository: commit gagal: %w", err)
 	}
 	return out, nil
 }

@@ -35,6 +35,8 @@ func NewService(repo *Repository, s3Client *s3.Client, cfg config.StorageConfig,
 // PrepareUpload membuat record meme (pending) dan mengembalikan presigned PUT URL
 // untuk mengunggah gambar dasar langsung ke S3/Garage.
 func (s *Service) PrepareUpload(ctx context.Context, userID, title, ext, contentType string) (UploadResponse, error) {
+	// Gate pre-check dini (UX); enforcement kuota final yang race-safe ada di
+	// repo.Create lewat lock baris subscription dalam satu transaksi (TKT-109).
 	if err := s.gate.CanCreate(ctx, userID); err != nil {
 		return UploadResponse{}, err
 	}

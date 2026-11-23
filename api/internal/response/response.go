@@ -24,6 +24,7 @@ const (
 	CodeMemeNotFound   = 30001
 	CodeInvalidImage   = 30002
 	CodeUploadTooLarge = 30003
+	CodeQuotaExceeded  = 30004
 	CodeInternalServer = 50000
 )
 

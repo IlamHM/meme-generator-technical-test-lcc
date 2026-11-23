@@ -31,8 +31,10 @@ func (g subscriptionGate) CanCreate(ctx context.Context, userID string) error {
 	if !status.Subscribed {
 		return meme.ErrNotSubscribedGate
 	}
+	// Kuota habis dimap ke error kuota yang spesifik (bukan disamarkan sebagai
+	// "butuh langganan"), sesuai envelope error yang sudah ada (TKT-109).
 	if status.MaxMemes > 0 && status.MemesUsed >= status.MaxMemes {
-		return meme.ErrNotSubscribedGate
+		return meme.ErrQuotaExceeded
 	}
 	return nil
 }
