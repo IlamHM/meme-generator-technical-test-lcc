@@ -120,6 +120,8 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrInvalidFile):
 		response.Error(w, http.StatusBadRequest, response.CodeInvalidImage, err.Error())
+	case errors.Is(err, ErrFileTooLarge):
+		response.Error(w, http.StatusRequestEntityTooLarge, response.CodeInvalidImage, err.Error())
 	case errors.Is(err, ErrNotFound):
 		response.Error(w, http.StatusNotFound, response.CodeMemeNotFound, err.Error())
 	case errors.Is(err, ErrNotSubscribedGate):

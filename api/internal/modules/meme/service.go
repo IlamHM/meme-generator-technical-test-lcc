@@ -3,6 +3,8 @@ package meme
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"path"
 	"strings"
 
@@ -36,11 +38,14 @@ func (s *Service) PrepareUpload(ctx context.Context, userID, title, ext, content
 	if err := s.gate.CanCreate(ctx, userID); err != nil {
 		return UploadResponse{}, err
 	}
-	// BUG: tidak ada allowlist ekstensi dan tidak ada batas ukuran file.
-	// Semua tipe file lolos (pdf, zip, html, exe) dan presigned PUT tanpa
-	// Content-Length berarti ukurannya tak terbatas. Fix: validasi ext
-	// (allowedExt) + batas ukuran di presign/handler.
-	objectKey := fmt.Sprintf("base/%s%s", token.RandomHex(12), strings.ToLower(ext))
+	ext = strings.ToLower(ext)
+	if !allowedExt(ext) {
+		return UploadResponse{}, ErrInvalidFile
+	}
+	// ContentType dipaksakan server-side dari allowlist ekstensi dan ikut
+	// ditandatangani di presign — klien tidak bisa PUT text/html/exe dsb.
+	contentType = extContentType(ext)
+	objectKey := fmt.Sprintf("base/%s%s", token.RandomHex(12), ext)
 
 	m, err := s.repo.Create(ctx, Meme{
 		UserID: userID, Title: title,
@@ -51,17 +56,50 @@ func (s *Service) PrepareUpload(ctx context.Context, userID, title, ext, content
 	}
 
 	presign := s3.NewPresignClient(s.s3)
-	input := &s3.PutObjectInput{Bucket: &s.bucket, Key: &objectKey}
-	// ContentType diambil mentah dari klien tanpa validasi allowlist —
-	// klien bisa memilih text/html dsb.
-	if contentType != "" {
-		input.ContentType = &contentType
-	}
+	input := &s3.PutObjectInput{Bucket: &s.bucket, Key: &objectKey, ContentType: &contentType}
 	req, err := presign.PresignPutObject(ctx, input, s3.WithPresignExpires(maxPresignTTL))
 	if err != nil {
 		return UploadResponse{}, fmt.Errorf("meme service: presign gagal: %w", err)
 	}
 	return UploadResponse{ID: m.ID, UploadURL: req.URL, BaseURL: m.BaseImageURL}, nil
+}
+
+// validateBaseImage memeriksa objek base yang diunggah klien sebelum dipakai:
+// ukuran <= maxUploadSize dan magic bytes cocok dengan tipe gambar yang
+// diizinkan (content sniffing via http.DetectContentType, bukan kepercayaan
+// pada header/ekstensi dari klien).
+func (s *Service) validateBaseImage(ctx context.Context, m Meme) error {
+	key := s.keyFromPublicURL(m.BaseImageURL)
+	if key == "" {
+		return ErrInvalidFile
+	}
+	head, err := s.s3.HeadObject(ctx, &s3.HeadObjectInput{Bucket: &s.bucket, Key: &key})
+	if err != nil {
+		return fmt.Errorf("meme service: head object gagal: %w", err)
+	}
+	if head.ContentLength != nil && *head.ContentLength > maxUploadSize {
+		return ErrFileTooLarge
+	}
+	obj, err := s.s3.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key, Range: &[]string{"bytes=0-511"}[0]})
+	if err != nil {
+		return fmt.Errorf("meme service: baca header objek gagal: %w", err)
+	}
+	defer obj.Body.Close()
+	buf := make([]byte, 512)
+	n, _ := io.ReadFull(obj.Body, buf)
+	sniffed := http.DetectContentType(buf[:n])
+	if !allowedMIME(sniffed) {
+		return ErrInvalidFile
+	}
+	return nil
+}
+
+func (s *Service) keyFromPublicURL(url string) string {
+	base := strings.TrimRight(s.baseURL, "/") + "/"
+	if !strings.HasPrefix(url, base) {
+		return ""
+	}
+	return strings.TrimPrefix(url, base)
 }
 
 // ResultUpload mengembalikan presigned PUT URL untuk gambar hasil render
@@ -70,7 +108,14 @@ func (s *Service) ResultUpload(ctx context.Context, userID, id string) (UploadRe
 	if err := s.gate.CanCreate(ctx, userID); err != nil {
 		return UploadResponse{}, err
 	}
-	if _, err := s.repo.GetByID(ctx, id, userID); err != nil {
+	m, err := s.repo.GetByID(ctx, id, userID)
+	if err != nil {
+		return UploadResponse{}, err
+	}
+	// Validasi base image yang diunggah klien sebelum dijadikan bahan render:
+	// menolak payload non-gambar (exe/zip/html) dan file oversize yang lolos
+	// lewat presigned PUT (yang tidak bisa membatasi ukuran di presign v2).
+	if err := s.validateBaseImage(ctx, m); err != nil {
 		return UploadResponse{}, err
 	}
 	objectKey := fmt.Sprintf("result/%s.png", id)
@@ -119,6 +164,30 @@ func (s *Service) publicURL(key string) string {
 func allowedExt(ext string) bool {
 	switch strings.ToLower(ext) {
 	case ".jpg", ".jpeg", ".png", ".gif", ".webp":
+		return true
+	}
+	return false
+}
+
+// extContentType memetakan ekstensi yang diizinkan ke MIME-nya; dipaksakan
+// server-side agar Content-Type klien tidak dipercaya.
+func extContentType(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	}
+	return ""
+}
+
+func allowedMIME(mime string) bool {
+	switch mime {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
 		return true
 	}
 	return false
