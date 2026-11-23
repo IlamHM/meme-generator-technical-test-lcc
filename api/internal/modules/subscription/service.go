@@ -53,9 +53,18 @@ func (s *Service) Checkout(ctx context.Context, userID string, dto CheckoutDTO, 
 	}
 
 	reference := token.RandomHex(12)
-	sub, pay, err := s.repo.CreateSubscription(ctx, userID, plan, reference, idempotencyKey)
+	sub, pay, reused, err := s.repo.CreateSubscription(ctx, userID, plan, reference, idempotencyKey)
 	if err != nil {
 		return CheckoutResponse{}, err
+	}
+	if reused {
+		// Checkout pending untuk user+plan ini sudah ada (double-click dengan
+		// Idempotency-Key baru): kembalikan yang lama, jangan charge ulang.
+		return CheckoutResponse{
+			Subscription:   sub,
+			Payment:        pay,
+			MockGatewayURL: "/api/v1/subscription/payments/" + pay.Reference + "/confirm",
+		}, nil
 	}
 	url, err := s.gateway.CreateCharge(ctx, pay.AmountIDR, reference)
 	if err != nil {

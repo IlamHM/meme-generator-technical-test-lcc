@@ -7,8 +7,16 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// pgUniqueViolation melaporkan apakah err adalah pelanggaran unique
+// constraint PostgreSQL (SQLSTATE 23505).
+func pgUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
 
 // Repository akses data langganan & pembayaran.
 type Repository struct {
@@ -57,14 +65,43 @@ func (r *Repository) GetPlanByCode(ctx context.Context, code string) (Plan, erro
 // CreateSubscription membuat langganan pending + pembayaran pending dalam satu transaksi.
 // idempotencyKey disimpan di payments: replay dengan key sama mengembalikan
 // payment yang sama (unique index sebagai safety net).
-func (r *Repository) CreateSubscription(ctx context.Context, userID string, p Plan, reference, idempotencyKey string) (Subscription, Payment, error) {
+// TKT-105: jika user sudah punya checkout pending untuk plan yang sama
+// (double-click mengirim Idempotency-Key baru), checkout yang ada DIKUNCI
+// (FOR UPDATE) lalu dikembalikan (reused=true) tanpa membuat baris baru.
+// Unique partial index subscriptions_user_plan_pending_idx menjadi safety net:
+// insert yang kalah race mendapat 23505 dan replay ke checkout pemenang.
+func (r *Repository) CreateSubscription(ctx context.Context, userID string, p Plan, reference, idempotencyKey string) (sub Subscription, pay Payment, reused bool, err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return Subscription{}, Payment{}, err
+		return Subscription{}, Payment{}, false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	var sub Subscription
+	// Reuse checkout pending yang sudah ada untuk (user, plan). FOR UPDATE
+	// mengunci baris langganan agar request paralel menunggu transaksi ini
+	// selesai alih-alih membuat checkout kedua.
+	err = tx.QueryRow(ctx, `
+		SELECT s.id, s.user_id, s.plan_id, s.status, s.starts_at, s.ends_at,
+		       p.id, p.subscription_id, p.amount_idr, p.status, p.reference
+		FROM subscriptions s
+		JOIN payments p ON p.subscription_id = s.id AND p.status = 'pending'
+		WHERE s.user_id = $1 AND s.plan_id = $2 AND s.status = 'pending'
+		ORDER BY s.created_at DESC
+		LIMIT 1
+		FOR UPDATE OF s`,
+		userID, p.ID,
+	).Scan(&sub.ID, &sub.UserID, &sub.PlanID, &sub.Status, &sub.StartsAt, &sub.EndsAt,
+		&pay.ID, &pay.SubscriptionID, &pay.AmountIDR, &pay.Status, &pay.Reference)
+	switch {
+	case err == nil:
+		if err := tx.Commit(ctx); err != nil {
+			return Subscription{}, Payment{}, false, err
+		}
+		return sub, pay, true, nil
+	case !errors.Is(err, pgx.ErrNoRows):
+		return Subscription{}, Payment{}, false, fmt.Errorf("subscription repository: cek pending checkout gagal: %w", err)
+	}
+
 	err = tx.QueryRow(ctx, `
 		INSERT INTO subscriptions (user_id, plan_id, status)
 		VALUES ($1, $2, 'pending')
@@ -72,10 +109,17 @@ func (r *Repository) CreateSubscription(ctx context.Context, userID string, p Pl
 		userID, p.ID,
 	).Scan(&sub.ID, &sub.UserID, &sub.PlanID, &sub.Status, &sub.StartsAt, &sub.EndsAt)
 	if err != nil {
-		return Subscription{}, Payment{}, fmt.Errorf("subscription repository: create subscription gagal: %w", err)
+		// Kalah race melawan request paralel (unique partial index): replay
+		// ke checkout pemenang agar tetap satu payment pending.
+		if pgUniqueViolation(err) {
+			if rbErr := tx.Rollback(ctx); rbErr != nil {
+				return Subscription{}, Payment{}, false, rbErr
+			}
+			return r.PendingCheckoutByUserPlan(ctx, userID, p.ID)
+		}
+		return Subscription{}, Payment{}, false, fmt.Errorf("subscription repository: create subscription gagal: %w", err)
 	}
 
-	var pay Payment
 	err = tx.QueryRow(ctx, `
 		INSERT INTO payments (subscription_id, amount_idr, status, reference, idempotency_key)
 		VALUES ($1, $2, 'pending', $3, $4)
@@ -83,13 +127,49 @@ func (r *Repository) CreateSubscription(ctx context.Context, userID string, p Pl
 		sub.ID, p.PriceIDR, reference, idempotencyKey,
 	).Scan(&pay.ID, &pay.SubscriptionID, &pay.AmountIDR, &pay.Status, &pay.Reference)
 	if err != nil {
-		return Subscription{}, Payment{}, fmt.Errorf("subscription repository: create payment gagal: %w", err)
+	if pgUniqueViolation(err) {
+		// Idempotency-Key sudah pernah dipakai (atau race): replay.
+		if rbErr := tx.Rollback(ctx); rbErr != nil {
+			return Subscription{}, Payment{}, false, rbErr
+		}
+		return r.PendingCheckoutByUserPlan(ctx, userID, p.ID)
+	}
+	return Subscription{}, Payment{}, false, fmt.Errorf("subscription repository: create payment gagal: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return Subscription{}, Payment{}, err
+	return Subscription{}, Payment{}, false, err
 	}
-	return sub, pay, nil
+	return sub, pay, false, nil
+}
+
+// PendingCheckoutByUserPlan mengembalikan checkout (subscription + payment)
+// pending milik user untuk plan tertentu. Dipakai sebagai replay path saat
+// unique partial index menolak insert duplikat (race double-submit, TKT-105).
+func (r *Repository) PendingCheckoutByUserPlan(ctx context.Context, userID, planID string) (Subscription, Payment, bool, error) {
+	const q = `
+	SELECT s.id, s.user_id, s.plan_id, s.status, s.starts_at, s.ends_at,
+	       p.id, p.subscription_id, p.amount_idr, p.status, p.reference
+	FROM subscriptions s
+	JOIN payments p ON p.subscription_id = s.id AND p.status = 'pending'
+	WHERE s.user_id = $1 AND s.plan_id = $2 AND s.status = 'pending'
+	ORDER BY s.created_at DESC
+	LIMIT 1`
+	var (
+	sub Subscription
+	pay Payment
+	)
+	err := r.pool.QueryRow(ctx, q, userID, planID).Scan(
+	&sub.ID, &sub.UserID, &sub.PlanID, &sub.Status, &sub.StartsAt, &sub.EndsAt,
+	&pay.ID, &pay.SubscriptionID, &pay.AmountIDR, &pay.Status, &pay.Reference,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+	return Subscription{}, Payment{}, false, ErrNotFound
+	}
+	if err != nil {
+	return Subscription{}, Payment{}, false, fmt.Errorf("subscription repository: lookup pending checkout gagal: %w", err)
+	}
+	return sub, pay, true, nil
 }
 
 // CheckoutByIdempotencyKey mengembalikan checkout yang sudah ada untuk key
