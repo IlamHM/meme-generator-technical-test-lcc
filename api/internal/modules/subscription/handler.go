@@ -95,6 +95,8 @@ func writeError(w http.ResponseWriter, err error) {
 		response.Error(w, http.StatusPaymentRequired, response.CodePaymentFailed, err.Error())
 	case errors.Is(err, ErrNotSubscribed):
 		response.Error(w, http.StatusForbidden, response.CodeNotSubscribed, err.Error())
+	case errors.Is(err, ErrSubscriptionExpired):
+		response.Error(w, http.StatusForbidden, response.CodeSubscriptionExpired, err.Error())
 	default:
 		// Log error asli agar error internal bisa didiagnosis dari log.
 		slog.Error("subscription handler: internal error", "err", err)

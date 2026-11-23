@@ -2,6 +2,7 @@ package subscription
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -95,6 +96,11 @@ func (s *Service) Status(ctx context.Context, userID string) (SubscriptionStatus
 			MemesUsed:  used,
 			MaxMemes:   plan.MaxMemes,
 		}, nil
+	}
+	// Permukaan status "expired" agar klien bisa membedakan dari
+	// "belum berlangganan" (TKT-101).
+	if errors.Is(err, ErrSubscriptionExpired) {
+		return SubscriptionStatus{Subscribed: false, Status: "expired"}, nil
 	}
 	return SubscriptionStatus{Subscribed: false, MemesUsed: 0, MaxMemes: 0}, nil
 }

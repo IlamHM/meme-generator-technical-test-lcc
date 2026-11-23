@@ -51,19 +51,33 @@ func (r *Repository) Create(ctx context.Context, m Meme) (Meme, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Lock baris subscription aktif user sampai commit.
+	// Lock baris subscription aktif user sampai commit. Masa aktif dicek
+	// terhadap WAKTU SERVER (now()): baris berstatus 'active' yang sudah
+	// lewat ends_at tidak lolos (fix TKT-101).
 	var maxMemes, durationDays int32
 	err = tx.QueryRow(ctx, `
 		SELECT p.max_memes, p.duration_days
 		FROM subscriptions s
 		JOIN plans p ON p.id = s.plan_id
 		WHERE s.user_id = $1 AND s.status = 'active'
+		  AND s.ends_at > now()
 		ORDER BY s.ends_at DESC
 		LIMIT 1
 		FOR UPDATE OF s`,
 		m.UserID,
 	).Scan(&maxMemes, &durationDays)
 	if errors.Is(err, pgx.ErrNoRows) {
+		var hasExpired bool
+		if scanErr := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM subscriptions
+				WHERE user_id = $1 AND status = 'active' AND ends_at <= now()
+			)`, m.UserID).Scan(&hasExpired); scanErr != nil {
+			return Meme{}, fmt.Errorf("meme repository: cek expired gagal: %w", scanErr)
+		}
+		if hasExpired {
+			return Meme{}, ErrSubscriptionExpiredGate
+		}
 		return Meme{}, ErrNotSubscribedGate
 	}
 	if err != nil {

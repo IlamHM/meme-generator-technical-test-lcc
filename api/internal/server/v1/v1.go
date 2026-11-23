@@ -29,6 +29,9 @@ func (g subscriptionGate) CanCreate(ctx context.Context, userID string) error {
 		return err
 	}
 	if !status.Subscribed {
+		if status.Status == "expired" {
+			return meme.ErrSubscriptionExpiredGate
+		}
 		return meme.ErrNotSubscribedGate
 	}
 	// Kuota habis dimap ke error kuota yang spesifik (bukan disamarkan sebagai

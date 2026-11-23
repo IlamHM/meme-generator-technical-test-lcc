@@ -20,6 +20,9 @@ const (
 	CodePaymentFailed     = 20003
 	CodePlanNotFound      = 20004
 	CodeAlreadySubscribed = 20005
+	// CodeSubscriptionExpired dibedakan dari CodeNotSubscribed (TKT-101):
+	// user pernah berlangganan tetapi masa aktifnya sudah habis.
+	CodeSubscriptionExpired = 20006
 
 	CodeMemeNotFound   = 30001
 	CodeInvalidImage   = 30002

@@ -163,6 +163,13 @@ func (r *Repository) ConfirmPayment(ctx context.Context, reference string) (Subs
 	return sub, pay, nil
 }
 
+// ActiveByUser mengembalikan langganan yang benar-benar aktif menurut WAKTU
+// SERVER: status = 'active' DAN ends_at > now(). Fix TKT-101: sebelumnya
+// hanya memfilter status = 'active', sehingga langganan yang sudah lewat
+// ends_at tapi belum sempat ditandai janitor tetap dianggap aktif.
+// Dua kemungkinan no-rows dibedakan lewat lookup kedua: ada baris aktif yang
+// sudah kedaluwarsa -> ErrSubscriptionExpired; tidak ada baris aktif sama
+// sekali -> ErrNotSubscribed.
 func (r *Repository) ActiveByUser(ctx context.Context, userID string) (Subscription, Plan, error) {
 	const q = `
 		SELECT s.id, s.user_id, s.plan_id, s.status, s.starts_at, s.ends_at,
@@ -170,6 +177,7 @@ func (r *Repository) ActiveByUser(ctx context.Context, userID string) (Subscript
 		FROM subscriptions s
 		JOIN plans p ON p.id = s.plan_id
 		WHERE s.user_id = $1 AND s.status = 'active'
+		  AND s.ends_at > now()
 		ORDER BY s.ends_at DESC LIMIT 1`
 	var (
 		sub Subscription
@@ -180,6 +188,17 @@ func (r *Repository) ActiveByUser(ctx context.Context, userID string) (Subscript
 		&p.ID, &p.Code, &p.Name, &p.PriceIDR, &p.Duration, &p.MaxMemes, &p.Active,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
+		var hasExpired bool
+		if scanErr := r.pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM subscriptions
+				WHERE user_id = $1 AND status = 'active' AND ends_at <= now()
+			)`, userID).Scan(&hasExpired); scanErr != nil {
+			return Subscription{}, Plan{}, fmt.Errorf("subscription repository: cek expired gagal: %w", scanErr)
+		}
+		if hasExpired {
+			return Subscription{}, Plan{}, ErrSubscriptionExpired
+		}
 		return Subscription{}, Plan{}, ErrNotSubscribed
 	}
 	if err != nil {

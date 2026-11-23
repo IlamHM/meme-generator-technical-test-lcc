@@ -126,6 +126,8 @@ func writeError(w http.ResponseWriter, err error) {
 		response.Error(w, http.StatusNotFound, response.CodeMemeNotFound, err.Error())
 	case errors.Is(err, ErrNotSubscribedGate):
 		response.Error(w, http.StatusForbidden, response.CodeNotSubscribed, ErrNotSubscribedGate.Error())
+	case errors.Is(err, ErrSubscriptionExpiredGate):
+		response.Error(w, http.StatusForbidden, response.CodeSubscriptionExpired, ErrSubscriptionExpiredGate.Error())
 	case errors.Is(err, ErrQuotaExceeded):
 		response.Error(w, http.StatusForbidden, response.CodeQuotaExceeded, ErrQuotaExceeded.Error())
 	default:
