@@ -37,6 +37,20 @@ export function useSubscriptionStatus() {
   });
 }
 
+// Idempotency key dibuat SEKALI per maksud checkout (per planCode) lalu
+// dipakai ulang untuk semua retry/double-click, sehingga backend menganggap
+// klik berulang sebagai permintaan yang sama.
+const checkoutIdempotencyKeys = new Map<string, string>();
+
+function getCheckoutIdempotencyKey(planCode: string): string {
+  let key = checkoutIdempotencyKeys.get(planCode);
+  if (!key) {
+    key = crypto.randomUUID();
+    checkoutIdempotencyKeys.set(planCode, key);
+  }
+  return key;
+}
+
 export function useCheckout() {
   const qc = useQueryClient();
   return useMutation({
@@ -44,15 +58,16 @@ export function useCheckout() {
       unwrap<CheckoutResponse>(
         await api.post("/api/v1/subscription/checkout", { planCode }, {
           headers: {
-            // BUG: key dibuat BARU di setiap panggilan mutationFn — artinya
-            // setiap klik (termasuk double-click) dianggap maksud berbeda.
-            // Key yang benar dibuat sekali per maksud (mis. per plan yang
-            // dipilih) lalu dipakai ulang saat retry.
-            "Idempotency-Key": crypto.randomUUID(),
+            "Idempotency-Key": getCheckoutIdempotencyKey(planCode),
           },
         }),
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.subscription }),
+    onSuccess: (_data, planCode) => {
+      // Checkout selesai — lepaskan key agar pembelian plan ini berikutnya
+      // dianggap maksud baru.
+      checkoutIdempotencyKeys.delete(planCode);
+      qc.invalidateQueries({ queryKey: queryKeys.subscription });
+    },
   });
 }
 
