@@ -224,3 +224,40 @@ Sembilan tiket production issue plus satu prasyarat infrastruktur (CORS) berhasi
 | `ce0c120` | fix(subscription): prevent duplicate pending checkout (TKT-105 backend) |
 | `6b45b86` | fix(subscription): refresh status after payment without hard reload (TKT-104) |
 | `805224d` | fix(payment): show loading and error feedback on pay (TKT-106) |
+
+---
+
+## Follow-up — 2026-11-24 (TKT-103, TKT-108, performa login)
+
+Bagian ini mengoreksi klaim penyelesaian sebelumnya berdasarkan pemeriksaan ulang kode dan external checker. Tidak ada commit baru untuk perubahan ini.
+
+### TKT-103 — cookie token dapat dibaca JavaScript
+
+**Root cause**: `cookie.Set` secara eksplisit memakai `HttpOnly: false` untuk access dan refresh token.
+
+**Perubahan**: Kedua cookie kini `HttpOnly`; `Path=/`, `SameSite=Lax`, `MaxAge`, dan argumen `Secure` dipertahankan. `Clear` tetap memakai `Path=/`, `HttpOnly`, `SameSite=Lax`, dan atribut penghapusan yang sama.
+
+**Bukti pengujian**: `cookie_test.go` memeriksa atribut `Set-Cookie` untuk access/refresh pada `Secure=false/true`, serta atribut clear. Klaim ini berdasarkan unit test, bukan pemeriksaan browser live.
+
+### TKT-108 — validasi ukuran terjadi setelah objek masuk storage
+
+**Koreksi**: Klaim sebelumnya bahwa upload >10 MB selalu mendapat **413** tidak tepat. Presigned `PutObject` lama tidak membawa batas ukuran; `HeadObject` di `ResultUpload` hanya menolak pemakaian objek setelah objek tersebut sudah tersimpan.
+
+**Perubahan**:
+- Base upload memakai `PresignPostObject` dengan kondisi `content-length-range` **0 sampai 10 MiB inklusif**, key tetap, dan Content-Type dari allowlist server. Policy ditandatangani dan diperiksa oleh S3/Garage pada batas upload.
+- Respons base upload menambahkan `fields` untuk form presign. Frontend mengirim `multipart/form-data` via POST, dengan `file` sebagai field terakhir.
+- Result upload tetap memakai PUT; `HeadObject`, batas ukuran, dan validasi magic bytes tetap dipertahankan sebagai pertahanan berlapis.
+- AWS SDK v2 memang menandatangani `Content-Length` PUT bila diberikan, tetapi itu hanya mensyaratkan satu nilai panjang, bukan rentang maksimum untuk payload yang belum diketahui server. Karena itu mekanisme POST policy dipilih; Garage mendokumentasikan dukungan `PostObject`.
+
+**Bukti pengujian**: Unit test membuka policy hasil SDK dan memastikan batas tepat `10485760`, key/bucket, dan Content-Type ikut ditandatangani. Integration test opt-in (`S3_INTEGRATION=1`) mengunggah 10 MiB dan 11 MiB serta mengharapkan success/rejection; test ini **dilewati dalam sesi ini karena Docker/Garage lokal tidak berjalan**. Tidak ada klaim live verification untuk batas storage.
+
+### Login p95 — pengukuran Argon2id
+
+**Hasil pengukuran**: Windows 11, Go 1.25.2 windows/amd64, AMD Ryzen 7 5800H (8 core/16 logical processor), `runtime.NumCPU=16`, `GOMAXPROCS=16`. Tiga benchmark masing-masing lima iterasi terhadap parameter lama (time=1, memory=64 MiB, threads=4, keyLen=32):
+
+| Operasi | Hasil per iterasi | Rata-rata |
+|---|---:|---:|
+| `HashPassword` | 23,31 / 24,27 / 24,03 ms | **23,87 ms** |
+| `VerifyPassword` | 26,37 / 25,15 / 26,05 ms | **25,85 ms** |
+
+Parameter dan format PHC **tidak diubah** karena hashing lokal jauh di bawah target 500 ms. Benchmark after pada kode yang sama menghasilkan hash 29,05 / 34,87 / 30,37 ms (rata-rata **31,43 ms**) dan verify 31,41 / 30,22 / 30,25 ms (rata-rata **30,63 ms**). Perubahan angka adalah variasi pengukuran, bukan perubahan parameter. Ini bukan benchmark endpoint login p95: JWT, Redis, database, network, dan konkurensi tidak tercakup, sehingga p95 ~4925 ms belum dapat diatribusikan ke Argon2id. Test round-trip, wrong-password, dan kompatibilitas hash parameter lama ditambahkan. Instrumentasi timing sementara kini mengukur fase lookup repository, verifikasi password, dan Redis SET dengan field `operation` serta `duration_ms`; root cause bottleneck endpoint masih menunggu bukti runtime dari log tersebut.

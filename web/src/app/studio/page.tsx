@@ -20,8 +20,8 @@ import {
 } from "@/lib/queries";
 
 // Alur render:
-// 1. prepare upload → presigned PUT untuk gambar dasar
-// 2. PUT gambar dasar langsung ke Garage (S3)
+// 1. prepare upload → presigned POST untuk gambar dasar
+// 2. POST form gambar dasar langsung ke Garage (S3), dibatasi 10 MiB
 // 3. render canvas: gambar dasar + teks atas/bawah font Impact
 // 4. presign via result-upload → PUT hasil PNG
 // 5. complete → simpan URL hasil ke database
@@ -112,6 +112,20 @@ async function putToS3(uploadUrl: string, blob: Blob) {
   if (!res.ok) throw new Error(`upload ke S3 gagal: ${res.status}`);
 }
 
+async function postToS3(
+  uploadUrl: string,
+  fields: Record<string, string>,
+  blob: Blob,
+) {
+  const form = new FormData();
+  Object.entries(fields).forEach(([key, value]) => form.append(key, value));
+  form.append("Content-Type", blob.type);
+  // S3 mengharuskan field file menjadi field terakhir dalam form.
+  form.append("file", blob);
+  const res = await fetch(uploadUrl, { method: "POST", body: form });
+  if (!res.ok) throw new Error(`upload ke S3 gagal: ${res.status}`);
+}
+
 interface ResultUploadData {
   uploadUrl: string;
   baseUrl: string;
@@ -178,7 +192,8 @@ export default function StudioPage() {
       // 1) presign gambar dasar
       const prepared = await prepare.mutateAsync({ title, filename: file.name });
       // 2) unggah gambar dasar ke Garage
-      await putToS3(prepared.uploadUrl, file);
+      if (!prepared.fields) throw new Error("field upload tidak tersedia");
+      await postToS3(prepared.uploadUrl, prepared.fields, file);
 
       // 3) render hasil ke PNG
       const resultCanvas = document.createElement("canvas");

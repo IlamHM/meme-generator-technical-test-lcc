@@ -32,8 +32,8 @@ func NewService(repo *Repository, s3Client *s3.Client, cfg config.StorageConfig,
 	return &Service{repo: repo, s3: s3Client, bucket: cfg.Bucket, baseURL: cfg.PublicBaseURL, gate: gate}
 }
 
-// PrepareUpload membuat record meme (pending) dan mengembalikan presigned PUT URL
-// untuk mengunggah gambar dasar langsung ke S3/Garage.
+// PrepareUpload membuat record meme (pending) dan mengembalikan presigned POST
+// untuk mengunggah gambar dasar langsung ke S3/Garage dengan batas ukuran.
 func (s *Service) PrepareUpload(ctx context.Context, userID, title, ext, contentType string) (UploadResponse, error) {
 	// Gate pre-check dini (UX); enforcement kuota final yang race-safe ada di
 	// repo.Create lewat lock baris subscription dalam satu transaksi (TKT-109).
@@ -45,7 +45,7 @@ func (s *Service) PrepareUpload(ctx context.Context, userID, title, ext, content
 		return UploadResponse{}, ErrInvalidFile
 	}
 	// ContentType dipaksakan server-side dari allowlist ekstensi dan ikut
-	// ditandatangani di presign — klien tidak bisa PUT text/html/exe dsb.
+	// ditandatangani di policy — klien tidak bisa mengganti MIME objek.
 	contentType = extContentType(ext)
 	objectKey := fmt.Sprintf("base/%s%s", token.RandomHex(12), ext)
 
@@ -57,13 +57,23 @@ func (s *Service) PrepareUpload(ctx context.Context, userID, title, ext, content
 		return UploadResponse{}, err
 	}
 
-	presign := s3.NewPresignClient(s.s3)
-	input := &s3.PutObjectInput{Bucket: &s.bucket, Key: &objectKey, ContentType: &contentType}
-	req, err := presign.PresignPutObject(ctx, input, s3.WithPresignExpires(maxPresignTTL))
+	req, err := s.presignBaseUpload(ctx, objectKey, contentType)
 	if err != nil {
 		return UploadResponse{}, fmt.Errorf("meme service: presign gagal: %w", err)
 	}
-	return UploadResponse{ID: m.ID, UploadURL: req.URL, BaseURL: m.BaseImageURL}, nil
+	return UploadResponse{ID: m.ID, UploadURL: req.URL, BaseURL: m.BaseImageURL, Fields: req.Values}, nil
+}
+
+func (s *Service) presignBaseUpload(ctx context.Context, objectKey, contentType string) (*s3.PresignedPostRequest, error) {
+	presign := s3.NewPresignClient(s.s3)
+	input := &s3.PutObjectInput{Bucket: &s.bucket, Key: &objectKey, ContentType: &contentType}
+	return presign.PresignPostObject(ctx, input, func(o *s3.PresignPostOptions) {
+		o.Expires = maxPresignTTL
+		o.Conditions = []any{
+			[]any{"content-length-range", 0, maxUploadSize},
+			map[string]string{"Content-Type": contentType},
+		}
+	})
 }
 
 // validateBaseImage memeriksa objek base yang diunggah klien sebelum dipakai:
@@ -114,9 +124,9 @@ func (s *Service) ResultUpload(ctx context.Context, userID, id string) (UploadRe
 	if err != nil {
 		return UploadResponse{}, err
 	}
-	// Validasi base image yang diunggah klien sebelum dijadikan bahan render:
-	// menolak payload non-gambar (exe/zip/html) dan file oversize yang lolos
-	// lewat presigned PUT (yang tidak bisa membatasi ukuran di presign v2).
+	// Validasi base image yang diunggah klien sebelum dijadikan bahan render.
+	// Presigned POST sudah membatasi ukuran di storage; pemeriksaan HEAD dan
+	// magic bytes tetap menjadi pertahanan berlapis untuk ukuran dan tipe.
 	if err := s.validateBaseImage(ctx, m); err != nil {
 		return UploadResponse{}, err
 	}
