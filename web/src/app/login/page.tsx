@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { Suspense, useEffect } from "react";
 import { useForm } from "@tanstack/react-form";
+import { useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,11 +12,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useLogin, useMe } from "@/lib/auth";
 import { apiErrorMessage } from "@/lib/api";
+import { safeRedirectPath } from "@/lib/redirect";
 
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
   const login = useLogin();
   const me = useMe();
+  // Tujuan setelah login: param ?redirect= yang diset guard halaman
+  // terproteksi; difilter agar hanya path internal (anti open redirect).
+  const redirectTo = safeRedirectPath(useSearchParams().get("redirect"));
 
   // Satu sumber kebenaran dengan protected page: query /auth/me.
   // Hanya redirect bila sesi TERBUKTI valid — cookie/access-token mentah
@@ -23,15 +28,15 @@ export default function LoginPage() {
   // logout), yang sebelumnya memicu redirect loop /login ↔ /.
   useEffect(() => {
     if (!me.isLoading && me.data) {
-      router.replace("/");
+      router.replace(redirectTo);
     }
-  }, [me.isLoading, me.data, router]);
+  }, [me.isLoading, me.data, router, redirectTo]);
 
   const form = useForm({
     defaultValues: { email: "", password: "" },
     onSubmit: async ({ value }) => {
       await login.mutateAsync(value);
-      router.push("/studio");
+      router.push(redirectTo);
     },
   });
 
@@ -114,5 +119,14 @@ export default function LoginPage() {
         </CardContent>
       </Card>
     </main>
+  );
+}
+
+// useSearchParams wajib dibungkus Suspense boundary di App Router.
+export default function LoginPage() {
+  return (
+    <Suspense>
+      <LoginForm />
+    </Suspense>
   );
 }

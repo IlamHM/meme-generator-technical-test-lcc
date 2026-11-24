@@ -19,7 +19,7 @@ type UploadResponse struct {
 	ID        string            `json:"id"`
 	UploadURL string            `json:"uploadUrl"`
 	BaseURL   string            `json:"baseUrl"`
-	Fields    map[string]string `json:"fields,omitempty"`
+	Fields    map[string]string `json:"fields"`
 }
 
 type ListResponse struct {

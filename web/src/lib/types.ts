@@ -37,7 +37,7 @@ export interface UploadResponse {
   id: string;
   uploadUrl: string;
   baseUrl: string;
-  fields?: Record<string, string>;
+  fields: Record<string, string>;
 }
 
 export interface CheckoutResponse {

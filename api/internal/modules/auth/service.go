@@ -5,9 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
-	"log/slog"
 	"strings"
-	"time"
 
 	"golang.org/x/crypto/argon2"
 
@@ -41,18 +39,12 @@ func (s *Service) Register(ctx context.Context, dto RegisterDTO) (AuthResponse, 
 }
 
 func (s *Service) Login(ctx context.Context, dto LoginDTO) (AuthResponse, error) {
-	started := time.Now()
 	user, err := s.users.GetByEmail(ctx, dto.Email)
-	// TEMPORARY login-performance diagnostic; remove after runtime root-cause analysis.
-	slog.InfoContext(ctx, "temporary login timing", "operation", "auth.repository.get_by_email", "duration_ms", time.Since(started).Milliseconds())
 	if err != nil {
 		return AuthResponse{}, ErrInvalidCredential
 	}
 
-	started = time.Now()
 	validPassword := VerifyPassword(user.PasswordHash, dto.Password)
-	// TEMPORARY login-performance diagnostic; remove after runtime root-cause analysis.
-	slog.InfoContext(ctx, "temporary login timing", "operation", "auth.password.verify", "duration_ms", time.Since(started).Milliseconds())
 	if !validPassword {
 		return AuthResponse{}, ErrInvalidCredential
 	}

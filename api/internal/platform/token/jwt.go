@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -71,10 +70,7 @@ func (m *Manager) Issue(ctx context.Context, userID, role string) (Pair, error) 
 	}
 	if m.redis != nil {
 		key := refreshKeyPrefix + userID
-		started := time.Now()
 		err := m.redis.Set(ctx, key, refresh, m.refreshTimeout).Err()
-		// TEMPORARY login-performance diagnostic; also covers register/refresh token issuance.
-		slog.InfoContext(ctx, "temporary login timing", "operation", "token.redis.set", "duration_ms", time.Since(started).Milliseconds())
 		if err != nil {
 			return Pair{}, fmt.Errorf("token: gagal menyimpan refresh token: %w", err)
 		}

@@ -24,6 +24,10 @@ type prepareUploadDTO struct {
 	Title       string `json:"title"`
 	Filename    string `json:"filename"`
 	ContentType string `json:"contentType"` // dikirim klien, dipakai mentah di presign
+	// FileSize adalah ukuran file (bytes) yang dilaporkan klien. Ini gerbang
+	// cepat/UX saja — penegakan ukuran sesungguhnya tetap policy
+	// content-length-range pada presigned POST di storage.
+	FileSize int64 `json:"fileSize"`
 }
 
 // PrepareUpload: user minta URL upload untuk gambar dasarnya.
@@ -39,7 +43,7 @@ func (h *Handler) PrepareUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ext := path.Ext(dto.Filename)
-	res, err := h.service.PrepareUpload(r.Context(), userID, dto.Title, ext, dto.ContentType)
+	res, err := h.service.PrepareUpload(r.Context(), userID, dto.Title, ext, dto.ContentType, dto.FileSize)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -51,7 +55,7 @@ type completeDTO struct {
 	ResultURL string `json:"resultUrl"`
 }
 
-// ResultUpload: minta presigned PUT URL untuk gambar hasil render canvas.
+// ResultUpload: minta presigned POST dengan batas ukuran untuk gambar hasil render canvas.
 func (h *Handler) ResultUpload(w http.ResponseWriter, r *http.Request) {
 	userID, ok := middleware.UserIDFromContext(r.Context())
 	if !ok {

@@ -260,4 +260,56 @@ Bagian ini mengoreksi klaim penyelesaian sebelumnya berdasarkan pemeriksaan ulan
 | `HashPassword` | 23,31 / 24,27 / 24,03 ms | **23,87 ms** |
 | `VerifyPassword` | 26,37 / 25,15 / 26,05 ms | **25,85 ms** |
 
-Parameter dan format PHC **tidak diubah** karena hashing lokal jauh di bawah target 500 ms. Benchmark after pada kode yang sama menghasilkan hash 29,05 / 34,87 / 30,37 ms (rata-rata **31,43 ms**) dan verify 31,41 / 30,22 / 30,25 ms (rata-rata **30,63 ms**). Perubahan angka adalah variasi pengukuran, bukan perubahan parameter. Ini bukan benchmark endpoint login p95: JWT, Redis, database, network, dan konkurensi tidak tercakup, sehingga p95 ~4925 ms belum dapat diatribusikan ke Argon2id. Test round-trip, wrong-password, dan kompatibilitas hash parameter lama ditambahkan. Instrumentasi timing sementara kini mengukur fase lookup repository, verifikasi password, dan Redis SET dengan field `operation` serta `duration_ms`; root cause bottleneck endpoint masih menunggu bukti runtime dari log tersebut.
+Parameter dan format PHC **tidak diubah** karena hashing lokal jauh di bawah target 500 ms. Benchmark after pada kode yang sama menghasilkan hash 29,05 / 34,87 / 30,37 ms (rata-rata **31,43 ms**) dan verify 31,41 / 30,22 / 30,25 ms (rata-rata **30,63 ms**). Perubahan angka adalah variasi pengukuran, bukan perubahan parameter. Ini bukan benchmark endpoint login p95: JWT, Redis, database, network, dan konkurensi tidak tercakup, sehingga p95 ~4925 ms belum dapat diatribusikan ke Argon2id. Test round-trip, wrong-password, dan kompatibilitas hash parameter lama ditambahkan. Instrumentasi timing sementara mengukur fase lookup repository, verifikasi password, dan Redis SET dengan field `operation` serta `duration_ms` selama diagnosis; log timing tersebut **sudah dihapus lagi dari kode** (angka buktinya tetap terdokumentasi di bawah).
+
+---
+
+## Follow-up runtime backend — 2026-11-24 (belum commit/push)
+
+### Perubahan surgical
+
+- Result upload dipindahkan dari presigned PUT tak terbatas ke presigned POST dengan batas yang sama seperti base: 0–10 MiB dan `image/png` dalam signed policy.
+- Base/result berbagi helper presign; validasi base, ownership, gate subscription, route, dan response envelope tidak diubah.
+- `UploadResponse.fields` eksplisit untuk base dan result. Frontend studio memakai tipe bersama dan multipart POST untuk result; interface lokal duplikat dihapus.
+- Integration test menambah assertion objek 11 MiB tidak ada dan exact length objek 10 MiB, coverage result boundary, legacy PUT probe, serta happy path API yang membersihkan hanya resource acak miliknya.
+
+### Bukti terverifikasi live
+
+- PostgreSQL/Redis/Garage healthy dan readiness berhasil tanpa reset/down/volume deletion.
+- Base dan result: **10 MiB diterima dan tersimpan tepat**, **11 MiB ditolak dan objek absent**.
+- Happy path: register → refresh → `/me` → logout → `/me` 401 → login → valid base POST → result POST → complete → list berisi meme dan `resultUrl`: **PASS**. Access/refresh `Set-Cookie` terverifikasi HttpOnly.
+- Legacy unsigned PUT ke base POST URL dengan payload kecil: **403 AccessDenied** (method/signature mismatch, bukan size limit). Old-client/external checker PUT compatibility tidak terbukti; checker source tidak tersedia dan tidak ada klaim kompatibilitas.
+
+### Benchmark `POST /api/v1/auth/login`
+
+| Beban | N | p50 | p95 | max |
+|---|---:|---:|---:|---:|
+| Cold login user baru | 1 | 28,555 ms | 28,555 ms | 28,555 ms |
+| Sequential warm | 100 | 27,836 ms | 30,560 ms | 48,769 ms |
+| Concurrent 4 | 100 | 65,049 ms | 102,463 ms | 118,478 ms |
+| Concurrent 16 | 100 | 239,036 ms | 363,752 ms | 386,815 ms |
+
+Phase timing run managed: DB lookup p50/p95/max 2/52/203 ms; Argon2 verify 55/233/304 ms; Redis SET 2/42/108 ms. Semua p95 endpoint <500 ms, jadi tidak ada fix performa tambahan dan Argon2 tidak diturunkan. Benchmark sebelumnya pada launcher berbeda juga <500 ms (sequential p95 49,843 ms; concurrent-16 p95 404,532 ms). **Log timing bersifat sementara dan sudah dihapus dari `auth/service.go` dan `token/jwt.go`** — angka di atas adalah bukti yang dipertahankan, kode final tidak membawa instrumentation diagnostik.
+
+### Check dan unresolved
+
+`go vet ./...`, full `go test ./... -count=1`, focused live integration, `npm run check`, `npm run lint`, dan `npm run build` lulus. Satu warning pre-existing: `formatIdr` tidak terpakai di `web/src/app/checkout/[reference]/page.tsx`. Test visual browser dan checker eksternal belum dilakukan. Tidak ada commit atau push pada fase ini.
+
+---
+
+## Follow-up 2 — 2026-11-24 (belum commit/push): orphan record upload + login redirect
+
+### Root cause: record yatim untuk file >10 MiB
+
+Laporan user "file >10 MiB tampak berhasil diupload" **bukan bypass storage** — policy `content-length-range` Garage bekerja. Akar masalahnya: `PrepareUpload` memanggil `repo.Create` **sebelum** klien mengunggah ke S3, sehingga saat Garage menolak POST kebesaran, record meme pending (`result_url IS NULL`) tetap ada dan muncul di daftar. Bukti manual-test user: baris `ed58fd22…` ("testing terakhir", created 09:17:10 UTC) dan `7c48ed03…` ("jemput", 09:16:34) ada tanpa `result_url` dan tanpa request `result-upload`/`complete` lanjutan di log API.
+
+### Perbaikan surgical
+
+- `prepareUploadDTO` menerima `fileSize` (bytes) dari klien; `Service.PrepareUpload` menolak `fileSize > maxUploadSize` dengan `ErrFileTooLarge` (HTTP 413) dan `fileSize <= 0` dengan 400 **sebelum** `repo.Create` — tidak ada record yatim baru. Ukuran dari klien hanyalah gerbang cepat/UX; penegakan riil tetap policy storage + `validateBaseImage`.
+- Frontend: `usePrepareUpload` mengirim `file.size`; studio menolak dini file >10 MiB dengan pesan jelas sebelum memanggil API.
+- Guard studio kini mengalihkan ke `/login?redirect=<path asal>`; halaman login membaca param tersebut lewat `safeRedirectPath` (hanya path internal, menolak `//…` anti open redirect; fallback `/`) dan kembali ke sana setelah login.
+- Instrumentasi timing login sementara **dihapus** dari `auth/service.go` dan `token/jwt.go`; angka diagnosis tetap terdokumentasi di atas.
+
+### Catatan cleanup
+
+Record yatim hasil manual test (`ed58fd22…`, `7c48ed03…`) dibiarkan — milik akun user. SQL cleanup manual opsional: `DELETE FROM memes WHERE result_url IS NULL AND id IN ('ed58fd22-12b9-4f86-b689-30d6d83c7147','7c48ed03-345f-404c-b93e-ce3d3f323a3a');`

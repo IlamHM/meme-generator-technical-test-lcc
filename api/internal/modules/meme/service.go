@@ -34,11 +34,21 @@ func NewService(repo *Repository, s3Client *s3.Client, cfg config.StorageConfig,
 
 // PrepareUpload membuat record meme (pending) dan mengembalikan presigned POST
 // untuk mengunggah gambar dasar langsung ke S3/Garage dengan batas ukuran.
-func (s *Service) PrepareUpload(ctx context.Context, userID, title, ext, contentType string) (UploadResponse, error) {
+func (s *Service) PrepareUpload(ctx context.Context, userID, title, ext, contentType string, fileSize int64) (UploadResponse, error) {
 	// Gate pre-check dini (UX); enforcement kuota final yang race-safe ada di
 	// repo.Create lewat lock baris subscription dalam satu transaksi (TKT-109).
 	if err := s.gate.CanCreate(ctx, userID); err != nil {
 		return UploadResponse{}, err
+	}
+	// Validasi ukuran SEBELUM repo.Create agar file kebesaran tidak
+	// meninggalkan record meme yatim (orphan) saat storage menolak upload.
+	// fileSize dari klien hanya gerbang cepat; batas riil tetap policy
+	// content-length-range pada presigned POST + validateBaseImage.
+	if fileSize <= 0 {
+		return UploadResponse{}, ErrInvalidFile
+	}
+	if fileSize > maxUploadSize {
+		return UploadResponse{}, ErrFileTooLarge
 	}
 	ext = strings.ToLower(ext)
 	if !allowedExt(ext) {
@@ -65,6 +75,14 @@ func (s *Service) PrepareUpload(ctx context.Context, userID, title, ext, content
 }
 
 func (s *Service) presignBaseUpload(ctx context.Context, objectKey, contentType string) (*s3.PresignedPostRequest, error) {
+	return s.presignUpload(ctx, objectKey, contentType)
+}
+
+func (s *Service) presignResultUpload(ctx context.Context, objectKey string) (*s3.PresignedPostRequest, error) {
+	return s.presignUpload(ctx, objectKey, "image/png")
+}
+
+func (s *Service) presignUpload(ctx context.Context, objectKey, contentType string) (*s3.PresignedPostRequest, error) {
 	presign := s3.NewPresignClient(s.s3)
 	input := &s3.PutObjectInput{Bucket: &s.bucket, Key: &objectKey, ContentType: &contentType}
 	return presign.PresignPostObject(ctx, input, func(o *s3.PresignPostOptions) {
@@ -114,7 +132,7 @@ func (s *Service) keyFromPublicURL(url string) string {
 	return strings.TrimPrefix(url, base)
 }
 
-// ResultUpload mengembalikan presigned PUT URL untuk gambar hasil render
+// ResultUpload mengembalikan presigned POST URL untuk gambar hasil render
 // (canvas) milik meme <id>; complete kemudian menyimpan URL publiknya.
 func (s *Service) ResultUpload(ctx context.Context, userID, id string) (UploadResponse, error) {
 	if err := s.gate.CanCreate(ctx, userID); err != nil {
@@ -132,16 +150,11 @@ func (s *Service) ResultUpload(ctx context.Context, userID, id string) (UploadRe
 	}
 	objectKey := fmt.Sprintf("result/%s.png", id)
 
-	presign := s3.NewPresignClient(s.s3)
-	req, err := presign.PresignPutObject(ctx, &s3.PutObjectInput{
-		Bucket:      &s.bucket,
-		Key:         &objectKey,
-		ContentType: &[]string{"image/png"}[0],
-	}, s3.WithPresignExpires(maxPresignTTL))
+	req, err := s.presignResultUpload(ctx, objectKey)
 	if err != nil {
 		return UploadResponse{}, fmt.Errorf("meme service: presign gagal: %w", err)
 	}
-	return UploadResponse{ID: id, UploadURL: req.URL, BaseURL: s.publicURL(objectKey)}, nil
+	return UploadResponse{ID: id, UploadURL: req.URL, BaseURL: s.publicURL(objectKey), Fields: req.Values}, nil
 }
 
 func (s *Service) Complete(ctx context.Context, userID, id, resultURL string) (Meme, error) {

@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, unwrap } from "@/lib/api";
 import { describeError, isUnauthorized } from "@/lib/errors";
+import { UploadResponse } from "@/lib/types";
 import { useMe } from "@/lib/auth";
 import { QueryErrorNotice } from "@/components/query-error-notice";
 import {
@@ -23,10 +24,14 @@ import {
 // 1. prepare upload → presigned POST untuk gambar dasar
 // 2. POST form gambar dasar langsung ke Garage (S3), dibatasi 10 MiB
 // 3. render canvas: gambar dasar + teks atas/bawah font Impact
-// 4. presign via result-upload → PUT hasil PNG
+// 4. presign via result-upload → POST hasil PNG dengan batas 10 MiB
 // 5. complete → simpan URL hasil ke database
 
 const FONT_STACK = "Impact, 'Arial Narrow Bold', sans-serif";
+
+// Batas ukuran gambar dasar — harus sinkron dengan maxUploadSize di API
+// dan policy content-length-range presigned POST.
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
 // Family Anton (fallback Impact di Linux) di-resolve dari CSS var next/font.
 function canvasFont(size: number): string {
@@ -103,15 +108,6 @@ function drawMeme(
   }
 }
 
-async function putToS3(uploadUrl: string, blob: Blob) {
-  const res = await fetch(uploadUrl, {
-    method: "PUT",
-    body: blob,
-    headers: { "Content-Type": blob.type },
-  });
-  if (!res.ok) throw new Error(`upload ke S3 gagal: ${res.status}`);
-}
-
 async function postToS3(
   uploadUrl: string,
   fields: Record<string, string>,
@@ -124,11 +120,6 @@ async function postToS3(
   form.append("file", blob);
   const res = await fetch(uploadUrl, { method: "POST", body: form });
   if (!res.ok) throw new Error(`upload ke S3 gagal: ${res.status}`);
-}
-
-interface ResultUploadData {
-  uploadUrl: string;
-  baseUrl: string;
 }
 
 export default function StudioPage() {
@@ -151,7 +142,9 @@ export default function StudioPage() {
   // Error non-401 (backend down dll.) tetap ditampilkan via notice.
   useEffect(() => {
     if (isUnauthorized(me.error) || isUnauthorized(status.error)) {
-      router.replace("/login");
+      // Bawa path asal agar login bisa mengembalikan user ke sini.
+      const here = window.location.pathname + window.location.search;
+      router.replace(`/login?redirect=${encodeURIComponent(here)}`);
     }
   }, [me.error, status.error, router]);
 
@@ -177,6 +170,12 @@ export default function StudioPage() {
       setError("Pilih gambar dasar dulu.");
       return;
     }
+    // Gerbang cepat sisi klien: tolak sebelum prepare agar tidak ada record
+    // yatim. Penegakan riil tetap di API + policy storage.
+    if (file.size > MAX_FILE_SIZE) {
+      setError("Ukuran file melebihi batas 10MB.");
+      return;
+    }
     setBusy(true);
     try {
       // Pastikan fallback font (Anton) sudah termuat sebelum dirender ke canvas.
@@ -190,9 +189,8 @@ export default function StudioPage() {
       imgRef.current = img;
 
       // 1) presign gambar dasar
-      const prepared = await prepare.mutateAsync({ title, filename: file.name });
+      const prepared = await prepare.mutateAsync({ title, filename: file.name, fileSize: file.size });
       // 2) unggah gambar dasar ke Garage
-      if (!prepared.fields) throw new Error("field upload tidak tersedia");
       await postToS3(prepared.uploadUrl, prepared.fields, file);
 
       // 3) render hasil ke PNG
@@ -206,10 +204,10 @@ export default function StudioPage() {
       );
 
       // 4) presign + unggah hasil
-      const result = unwrap<ResultUploadData>(
+      const result = unwrap<UploadResponse>(
         await api.post(`/api/v1/memes/${prepared.id}/result-upload`),
       );
-      await putToS3(result.uploadUrl, blob);
+      await postToS3(result.uploadUrl, result.fields, blob);
 
       // 5) complete
       await complete.mutateAsync({ id: prepared.id, resultUrl: result.baseUrl });
